@@ -1,0 +1,296 @@
+---
+# This playbook attempts to ensure and populate a RPM repository in Pulp.
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+# This playbook requires a (valid) repository name to be set (as value of rpm_repository_name).
+# For example by running it as follows:
+#
+# $ ansible-playbook                                    \
+#   --extra-vars 'rpm_repository_name=my_own_repository'  \
+#   pulp_rpm_repo_from_fileglob.yml
+#
+# Or by being called from another playbook.
+#
+# Other optional variables are:
+#   rpm_repository_description: "a description for the repository"
+#   rpm_local_upload_path: "local path where to look for .rpm files"
+#
+
+- name: Upload a local RPM package(s) to a RPM repository on Pulp
+  hosts: pulp
+  force_handlers: true
+  module_defaults:  # saves specifying these settings at every task using these modules
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; example: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    pulp.squeezer.artifact:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_repository:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_distribution:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.task:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    ansible.builtin.uri:
+      body_format: json
+      force_basic_auth: true
+      url_username: "{{ pulp_username }}"  # from group_vars/pulp
+      url_password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+
+  vars:
+    # Pulp where?
+    #pulp_url: "http://{{ inventory_hostname }}:8080"  # specified in from group_vars/pulp already
+
+    # Name and description of repository to put the packages in
+    #rpm_repository_name: my_very_own_repository  # disabled to prevent this from running as-is.
+    rpm_repository_description: "My repository for Aiur!"
+    # Local path, on control node, where to look for .rpm files to upload for this repository.
+    rpm_local_upload_path: "{{ playbook_dir }}/upload/{{ rpm_repository_name }}"
+
+  tasks:
+    - name: Stop when no rpm_repository_name given
+      ansible.builtin.fail:
+        msg: "Bailing out. The play requires a repository name set in variable 'rpm_repository_name'."
+      when: rpm_repository_name is undefined
+
+    - name: Acquire details of local file(s)
+      ansible.builtin.stat:
+        path: "{{ item }}"  # point me to a real file, not a symlink
+        checksum_algorithm: sha256
+        get_mime: true
+      register: file
+      loop: "{{ query('ansible.builtin.fileglob', rpm_local_upload_path + '/*.rpm') }}"
+      delegate_to: localhost
+
+    - name: Bail out when no matching files are found
+      ansible.builtin.fail:
+        msg: |
+          No matching files have been found in path:
+          {{ rpm_local_upload_path }}/*.rpm
+      when: file.results | length < 1
+
+    - name: Verify file(s) to upload are readable and RPM package files
+      ansible.builtin.assert:
+        that:
+          - item.stat.readable
+          - item.stat.mimetype == 'application/x-rpm'
+          - item.stat.checksum | length > 0
+        fail_msg: |
+          Something went wrong during verification of file '{{ item.stat.path }}'.
+          Please make sure this path is readable, is not a symlink and is an actual RPM package file.
+        quiet: true
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      delegate_to: localhost
+
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    - name: Ensure RPM repository  # noqa: args[module]
+      pulp.squeezer.rpm_repository:
+        name: "{{ rpm_repository_name }}"
+        description: "{{ rpm_repository_description }}"
+        state: present
+        autopublish: true
+      register: rpm_repository_output
+
+    - name: Query Pulp for presence of artifact(s)  # noqa: args[module]
+      pulp.squeezer.artifact:
+        sha256: "{{ item.stat.checksum }}"
+      register: artifact_query
+      # artifact_query.results[i].artifact returns null when artifact is not present
+      # artifact_query.results[i].artifact returns dict when artifact is present
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path | basename }}"
+
+    - name: Copy file(s) to Pulp host
+      ansible.builtin.copy:
+        src: "{{ item.item.stat.path }}"
+        dest: ~/
+        mode: 0644
+      register: copy_status
+      when: item.artifact == None
+      loop: "{{ artifact_query.results }}"
+      loop_control:
+        label: "{{ item.item.stat.path | basename }}"
+      notify:
+        - Clean-up copied files
+
+    - name: Upload artifact(s) to Pulp  # noqa: args[module]
+      pulp.squeezer.artifact:
+        file: "{{ item.dest }}"
+        state: present
+      register: artifact_upload
+      when: item.item.artifact == None
+      loop: "{{ copy_status.results }}"
+      loop_control:
+        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
+
+    - name: Refresh state of artifact(s)  # noqa: args[module]
+      pulp.squeezer.artifact:
+        sha256: "{{ item.stat.checksum }}"
+      register: artifact_state
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path | basename }}"
+
+    - name: Debug - Artifact information
+      ansible.builtin.debug:
+        msg: "{{ artifact_info }}"
+        verbosity: 1
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      vars:
+        artifact_info:
+          - filename: "{{ item.item.stat.path | basename }}"
+            sha256sum: "{{ item.item.stat.checksum }}"
+            artifact: "{{ item.artifact }}"
+
+    - name: Verify artifact integrity by comparing checksum of original file
+      ansible.builtin.assert:
+        that:
+          - checksum.file == checksum.artifact
+        fail_msg: "Checksum of artifact did not match file's. Data corruption occurred?"
+        quiet: true
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ filename }}"
+      vars:
+        filename: "{{ item.item.stat.path | basename }}"
+        checksum:
+          file: "{{ item.item.stat.checksum }}"
+          artifact: "{{ item.artifact.sha256 }}"
+
+    - name: Query Pulp for presence of RPM package
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}/pulp/api/v3/content/rpm/packages/\
+          ?sha256={{ item.artifact.sha256 }}\
+          &fields=name,arch,version,release,epoch,sha256,location_href,pulp_href,artifact"
+        method: GET
+        status_code: [200]
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      register: content_query
+
+    - name: Create RPM content from uploaded artifact
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}/pulp/api/v3/content/rpm/packages/"
+        method: POST
+        body:
+          artifact: "{{ artifact.pulp_href }}"
+        status_code: [202]
+      register: rpm_content
+      when: package_count == 0 or package_count == '0'
+      loop: "{{ content_query.results }}"
+      loop_control:
+        label: "{{ artifact.sha256 }}"
+      vars:
+        artifact: "{{ item.item.artifact }}"
+        package_count: "{{ item.json.count }}"
+
+    - name: Wait for content creation to finish  # noqa: args[module]
+      pulp.squeezer.task:
+        pulp_href: "{{ item.json.task }}"
+      register: task_status
+      until: task_status.task.state == 'completed' or task_status.task.state == 'failed'
+      retries: 30
+      delay: 2
+      changed_when:
+        - task_status.task.created_resources is defined
+        - task_status.task.created_resources | length > 0
+      failed_when:
+        - task_status.task.state == 'failed'
+        - not 'There is already a package' in task_status.task.error.description
+      loop: "{{ rpm_content.results | selectattr('skipped', 'undefined') | list }}"
+      loop_control:
+        label: "{{ item.json.task | default('') }}"
+
+    - name: Query Pulp for presence of RPM package
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}/pulp/api/v3/content/rpm/packages/\
+          ?sha256={{ item.artifact.sha256 }}\
+          &fields=name,arch,version,release,epoch,sha256,location_href,pulp_href,artifact"
+        method: GET
+        status_code: [200]
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      register: content_query
+
+    - name: Debug - Display per package result(s) of package query
+      ansible.builtin.debug:
+        msg: "{{ item.json }}"
+        verbosity: 1
+      loop: "{{ content_query.results }}"
+      loop_control:
+        label: "{{ item.json.results.0.location_href }}"
+
+    - name: Debug - Display generated list of pulp_href's of packages
+      ansible.builtin.debug:
+        msg: >
+          {{ content_query.results
+          | map(attribute='json.results')
+          | flatten
+          | map(attribute='pulp_href')
+          | list }}
+        verbosity: 1
+
+    - name: Associate content with RPM repository
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}{{ rpm_repository_href }}modify/"
+        method: POST
+        body:
+          add_content_units: "{{ package_href_list }}"
+        status_code: [202]
+      register: repo_content
+      vars:
+        rpm_repository_href: "{{ rpm_repository_output.repository.pulp_href }}"
+        package_href_list: >
+          {{ content_query.results
+          | map(attribute='json.results')
+          | flatten
+          | map(attribute='pulp_href')
+          | list }}
+
+    - name: Query for task completion  # noqa: args[module]
+      pulp.squeezer.task:
+        pulp_href: "{{ repo_content.json.task }}"
+      register: task_status
+      until: task_status.task.state == 'completed' or task_status.task.state == 'failed'
+      retries: 15
+      delay: 2
+      failed_when: task_status.task.state == 'failed'
+
+    - name: Package already present in publication, done.
+      ansible.builtin.meta: end_host
+      when: task_status.task.created_resources | length < 1  # no new resources created
+
+    - name: Get publication href
+      ansible.builtin.set_fact:
+        publication_href: "{{ task_status.task.created_resources | select('search', '.*/publications/.*') | first }}"
+
+    - name: Make new publication of the RPM repository available  # noqa: args[module]
+      pulp.squeezer.rpm_distribution:
+        name: "{{ rpm_repository_name }}"
+        base_path: "{{ rpm_repository_name }}"
+        publication: "{{ publication_href }}"
+        state: present
+
+  handlers:
+    - name: Clean-up copied files
+      ansible.builtin.file:
+        path: "{{ item.dest }}"
+        state: absent
+      loop: "{{ copy_status.results }}"
+      loop_control:
+        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
+      when: item.dest is defined  # do not try to remove file the copy task skipped

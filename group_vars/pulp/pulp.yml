@@ -1,0 +1,4 @@
+# Vars for group pulp (ya rly)
+pulp_url: "http://{{ inventory_hostname }}:8080"
+pulp_username: "admin"
+pulp_password: "secret"

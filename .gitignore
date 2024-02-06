@@ -1,0 +1,5 @@
+# Ignore Ansible collections
+collections/
+
+# Ignore my upload dir
+upload/

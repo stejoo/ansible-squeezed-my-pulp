@@ -1,0 +1,17 @@
+---
+# This playbook is used to upload local RPMs to a RPM repository within the
+# Pulp software repository management.
+#
+# Configured for Atop RPMs, see the 'vars' section for configuration details.
+#
+# Run this and it should run the pulp_rpm_repo_from_fileglob.yml playbook with
+# the variables set in the vars of the ansible.builtin.import_playbook item.
+
+- name: Run playbook to import RPMs from directory, with vars below
+  ansible.builtin.import_playbook: pulp_rpm_repo_from_fileglob.yml
+  vars:
+    # Name and description of repository to put the packages in
+    rpm_repository_name: atop_for_el8
+    rpm_repository_description: "Custom RPM repository of Atop for (RH)EL distributions"
+    # Local path, on control node, where to look for .rpm files to upload
+    rpm_local_upload_path: "{{ playbook_dir }}/upload/{{ rpm_repository_name }}"

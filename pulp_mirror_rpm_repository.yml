@@ -1,0 +1,216 @@
+---
+# Playbook to manage and synchronise Red Hat repository (mirrors) on Pulp
+#
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+- name: Perform management of Red Hat repositories on a Pulp repository server
+  hosts: pulp
+  force_handlers: true
+  module_defaults:
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; e.g.: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    pulp.squeezer.rpm_distribution:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_publication:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_repository:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_remote:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.rpm_sync:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+
+  vars:
+    redhat_uep_ca_path: /etc/rhsm/ca/redhat-uep.pem
+    redhat_repositories:
+      #  - name: rhel-8-for-x86_64-baseos-rpms
+      #    description: Mirror of Red Hat Enterprise Linux 8 for x86_64 - BaseOS (RPMs)
+      #    state: present
+      #    remote:
+      #      name: rhel-8-for-x86_64-baseos-rpms
+      #      state: present
+      #      url: https://cdn.redhat.com/content/dist/rhel8/8/x86_64/baseos/os
+      #      #proxy_url: http://my.internal.proxy:3128
+      #      requires_subscription: true
+
+      - name: my_rpmfusion_steam_repo
+        description: Mirror of RPMFusion Non-Free Steam repository
+        state: present
+        remote:
+          name: local_rpmfusion-nonfree-steam
+          state: present
+          url: http://{{ ansible_facts.fqdn }}:8000/rpmfusion-nonfree-steam/
+            #        remote:
+            #          name: remote_rpmfusion-nonfree-steam
+            #          state: present
+            #          url: http://ftp.nluug.nl/os/Linux/distr/rpmfusion/nonfree/fedora/steam/38/x86_64/
+
+  tasks:
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    - name: Check for repositories requiring subscription  # trapdoor: one set? => get subscription
+      ansible.builtin.set_fact:
+        get_subscription: true
+      loop: "{{ redhat_repositories }}"
+      loop_control:
+        loop_var: repository
+      when:
+        - repository.remote.requires_subscription is defined
+        - repository.remote.requires_subscription
+
+    # Major assumption/requirement: Pulp is running on a subscribed Red Hat box (i.e. has access)
+    # Idea for improvement: check if that is the case?
+    - name: Acquire Red Hat Subscription for the repositories that require authentication
+      when:
+        - get_subscription is defined
+        - get_subscription
+      block:
+        - name: Find Red Hat Subscription client certificate file
+          ansible.builtin.find:
+            paths: /etc/pki/entitlement/
+            use_regex: true
+            patterns: '^[0-9]*\.pem'
+          register: rh_client_cert
+
+        - name: Find Red Hat Subscription client key file
+          ansible.builtin.find:
+            paths: /etc/pki/entitlement/
+            use_regex: true
+            patterns: '^[0-9]*-key\.pem'
+          register: rh_client_key
+
+        - name: Verify Red Hat UEP CA certificate file exists
+          ansible.builtin.stat:
+            path: "{{ redhat_uep_ca_path }}"
+          register: rh_uep_ca
+
+        - name: Test the found subscription files
+          ansible.builtin.assert:
+            that:
+              - rh_client_cert.files | length == 1
+              - rh_client_cert.files[0].isreg
+              - rh_client_cert.files[0].size > 1000
+              - rh_client_key.files | length == 1
+              - rh_client_key.files[0].isreg
+              - rh_client_key.files[0].size > 1000
+              - rh_uep_ca.stat.exists
+              - rh_uep_ca.stat.isreg
+              - rh_uep_ca.stat.size > 1000
+            quiet: true
+
+        - name: Grab the Red Hat Subscription client certificate file
+          ansible.builtin.slurp:
+            src: "{{ rh_client_cert.files[0].path }}"
+          register: rh_client_cert_file
+
+        - name: Grab the Red Hat Subscription client key file
+          ansible.builtin.slurp:
+            src: "{{ rh_client_key.files[0].path }}"
+          register: rh_client_key_file
+
+        - name: Grab the Red Hat UEP CA certificate file
+          ansible.builtin.slurp:
+            src: "{{ redhat_uep_ca_path }}"
+          register: rh_uep_ca_file
+    # End of block "Acquire Red Hat Subscription for the repositories that require authentication"
+
+    - name: Ensure RPM repository  # noqa: args[module]
+      pulp.squeezer.rpm_repository:
+        name: "{{ repository.name }}"
+        description: "{{ repository.description }}"
+        state: "{{ repository.state | default('present') }}"
+      loop: "{{ redhat_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+
+    - name: Create RPM remote (without subscription)  # noqa: args[module]
+      pulp.squeezer.rpm_remote:
+        name: "{{ repository.remote.name }}"
+        url: "{{ repository.remote.url }}"
+        proxy_url: "{{ repository.remote.proxy_url | default(omit) }}"
+        state: "{{ repository.remote.state | default('present') }}"
+        policy: immediate
+      loop: "{{ redhat_repositories }}"
+      loop_control:
+        label: "{{ repository.remote.name }}"
+        loop_var: repository
+      when:
+        - repository.remote is defined
+        - repository.remote.requires_subscription is not defined
+        - not repository.remote.requires_subscription | default(false)
+
+    - name: Create RPM remote (with subscription)  # noqa: args[module]
+      pulp.squeezer.rpm_remote:
+        name: "{{ repository.remote.name }}"
+        url: "{{ repository.remote.url }}"
+        proxy_url: "{{ repository.remote.proxy_url | default(omit) }}"
+        state: "{{ repository.remote.state | default('present') }}"
+        ca_cert: "{{ rh_uep_ca_file.content | b64decode }}"
+        client_cert: "{{ rh_client_cert_file.content | b64decode }}"
+        client_key: "{{ rh_client_key_file.content | b64decode }}"
+        policy: immediate
+      loop: "{{ redhat_repositories }}"
+      loop_control:
+        label: "{{ repository.remote.name }}"
+        loop_var: repository
+      when:
+        - repository.remote is defined
+        - repository.remote.requires_subscription is defined
+        - repository.remote.requires_subscription | bool
+
+    - name: Synchronize repository  # noqa: args[module]
+      pulp.squeezer.rpm_sync:
+        repository: "{{ repository.name }}"
+        remote: "{{ repository.remote.name }}"
+        sync_policy: "{{ repository.sync_policy | default('mirror_complete') }}"
+      register: sync_task
+      loop: "{{ redhat_repositories }}"
+      loop_control:
+        label: "Sync remote {{ repository.remote.name | default('unknown') }} into repository {{ repository.name }}"
+        loop_var: repository
+      ignore_errors: true   # when sync fails for one item, continue with the others regardless
+      when:
+        - repository.remote is defined
+        - repository.remote.state is not defined or repository.remote.state == 'present'
+        - repository.state is not defined or repository.state == 'present'
+      notify:
+        - Generate new publication of the repository
+        - Make new publication of the repository available
+
+    - name: Report synchronised repository status
+      ansible.builtin.debug:
+        var: sync
+        verbosity: 1
+      loop: "{{ sync_task.results }}"
+      loop_control:
+        label: "{{ sync.repository.name }}"
+        loop_var: sync
+
+  handlers:
+    - name: Generate new publication of the repository  # noqa: args[module]
+      pulp.squeezer.rpm_publication:
+        repository: "{{ sync.repository.name }}"
+        state: present
+      register: pub_task
+      loop: "{{ sync_task.results | rejectattr('changed', 'eq', false) }}"  # do not process up-to-date repositories
+      loop_control:
+        label: "{{ sync.repository.name }}"
+        loop_var: sync
+
+    # Needs to be placed after "Generate new publication of the repository" handler
+    - name: Make new publication of the repository available  # noqa: args[module]
+      pulp.squeezer.rpm_distribution:
+        name: "{{ item.sync.repository.name }}"
+        base_path: "{{ item.sync.repository.name }}"
+        publication: "{{ item.publication.pulp_href }}"
+        state: present
+      loop: "{{ pub_task.results }}"
+      loop_control:
+        label: "{{ item.sync.repository.name }}"

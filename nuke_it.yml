@@ -1,0 +1,52 @@
+---
+# Playbook to destroy Pulp software repository on target host/group.
+#
+# Use Podman to destroy and cleanup the "Pulp in One Container" container image
+#
+# Dependencies:
+#   collections:
+#     - container.podman
+#
+
+- name: Nuke the Pulp in One Container container
+  hosts: pulp
+  remote_user: "{{ pulp_system_user | default('pulp') }}"
+  vars:
+    # Name of container to destroy
+    pulp_container_name: pulp
+
+  tasks:
+    - name: Tell Podman to ask Pulp to stop
+      containers.podman.podman_container:
+        name: pulp
+        state: stopped
+
+    - name: Ensure the Pulp service is stopped and disabled
+      ansible.builtin.systemd:
+        name: "container-{{ pulp_container_name }}.service"
+        state: stopped
+        enabled: false
+        scope: user
+
+    - name: Remove the systemd unit file of the Pulp container
+      ansible.builtin.file:
+        path: "{{ ansible_facts.user_dir }}/.config/systemd/user/container-{{ pulp_container_name }}.service"
+        state: absent
+      notify:
+        - Perform systemd daemon-reload
+
+  handlers:
+    - name: Perform systemd daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+        scope: user
+
+
+- name: Remove leftover data files
+  hosts: pulp
+  become: true
+  tasks:
+    - name: Wipe directories that preserve Pulp state
+      ansible.builtin.file:
+        path: "/home/{{ pulp_system_user | default('pulp') }}/pulp"
+        state: absent
