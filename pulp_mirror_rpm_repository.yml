@@ -41,13 +41,12 @@
         description: Mirror of RPMFusion Non-Free Steam repository
         state: present
         remote:
-          name: local_rpmfusion-nonfree-steam
-          state: present
-          url: http://{{ ansible_facts.fqdn }}:8000/rpmfusion-nonfree-steam/
-            #        remote:
-            #          name: remote_rpmfusion-nonfree-steam
-            #          state: present
-            #          url: http://ftp.nluug.nl/os/Linux/distr/rpmfusion/nonfree/fedora/steam/38/x86_64/
+#          name: local_rpmfusion-nonfree-steam
+#          state: present
+#          url: http://{{ ansible_facts.fqdn }}:8000/rpmfusion-nonfree-steam/
+           name: remote_rpmfusion-nonfree-steam
+           state: present
+           url: http://ftp.nluug.nl/os/Linux/distr/rpmfusion/nonfree/fedora/steam/38/x86_64/
 
   tasks:
     - name: Refresh and read status from Pulp API  # noqa: args[module]
