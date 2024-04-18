@@ -179,9 +179,6 @@
         - repository.remote is defined
         - repository.remote.state is not defined or repository.remote.state == 'present'
         - repository.state is not defined or repository.state == 'present'
-      notify:
-        - Generate new publication of the repository
-        - Make new publication of the repository available
 
     - name: Report synchronised repository status
       ansible.builtin.debug:
@@ -192,24 +189,13 @@
         label: "{{ sync.repository.name }}"
         loop_var: sync
 
-  handlers:
-    - name: Generate new publication of the repository  # noqa: args[module]
-      pulp.squeezer.rpm_publication:
-        repository: "{{ sync.repository.name }}"
-        state: present
-      register: pub_task
-      loop: "{{ sync_task.results | rejectattr('changed', 'eq', false) }}"  # do not process up-to-date repositories
-      loop_control:
-        label: "{{ sync.repository.name }}"
-        loop_var: sync
-
-    # Needs to be placed after "Generate new publication of the repository" handler
-    - name: Make new publication of the repository available  # noqa: args[module]
+    - name: Make the rpm distribution track the latest repository version
       pulp.squeezer.rpm_distribution:
-        name: "{{ item.sync.repository.name }}"
-        base_path: "{{ item.sync.repository.name }}"
-        publication: "{{ item.publication.pulp_href }}"
+        name: "{{ repository.name }}"
+        base_path: "{{ repository.name }}"
+        repository: "{{ repository.name }}"
         state: present
-      loop: "{{ pub_task.results }}"
+      loop: "{{ redhat_repositories }}"
       loop_control:
-        label: "{{ item.sync.repository.name }}"
+        label: "{{ repository.name }}"
+        loop_var: repository
