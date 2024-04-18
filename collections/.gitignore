@@ -1,0 +1,2 @@
+# ignore Ansible collections installed by ansible-galaxy
+ansible_collections/
