@@ -35,6 +35,11 @@
       notify:
         - Perform systemd daemon-reload
 
+    - name: Remove pulp_glue python dependency of pulp.squeezer collection
+      ansible.builtin.pip:
+        name: pulp-glue
+        state: absent
+
   handlers:
     - name: Perform systemd daemon-reload
       ansible.builtin.systemd:

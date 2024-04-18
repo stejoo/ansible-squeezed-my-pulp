@@ -75,6 +75,11 @@
     pulp_admin_password: 'secret'
 
   tasks:
+    - name: Ensure pulp_glue python dependency of pulp.squeezer collection
+      ansible.builtin.pip:
+        name: pulp-glue==0.23.2
+        state: present
+
     - name: Ensure directories to preserve Pulp state are present
       ansible.builtin.file:
         path: "{{ item.dir }}"

@@ -1,0 +1,20 @@
+---
+# Required collections definition.
+#
+# List of collections that should be installed before running playbooks.
+# The list of collections can be installed with command:
+#
+# $ ansible-galaxy collection install -r requirements.yml
+#
+# This requires internet connectivity!
+
+collections:
+  - name: community.general
+    version: 8.5.0
+  - name: ansible.posix
+    version: 1.5.4
+  - name: containers.podman
+    version: 1.12.0
+  # for Pulp repository management
+  - name: pulp.squeezer
+    version: 0.0.15
