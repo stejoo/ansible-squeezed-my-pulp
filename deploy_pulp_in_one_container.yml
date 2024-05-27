@@ -1,8 +1,12 @@
 ---
 # Playbook to deploy Pulp software repository on target host/group.
 #
-# Use Podman to deploy and run the "Pulp in One Container" container image
-# under the identify of the current user on the localhost.
+# Use Podman to deploy and run the "Pulp in One Container" container image.
+# The container will run rootless as a regular user "pulp" (default).
+#
+# This playbook is written and tested on Red Hat family systems. I do expect it
+# to operate just fine on other Linux distros that have systemd as init and
+# podman available in the software repositories as well.
 #
 # Dependencies:
 #   collections:
