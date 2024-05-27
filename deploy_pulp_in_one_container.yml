@@ -18,7 +18,7 @@
     pulp_system_user: pulp
     # SSH public key to place in ~/.ssh/authorized_keys file of pulp_system_user user
     pulp_system_user_authorized_key: >
-      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHrrpBfzdeZNzY2hxPi9KEBx8bZAROkA8HAAcoE5SK2I
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGLH91Zii9JBO310qLAI1+6IlMO2ykOwlQ5ytHU3XPhS
 
   tasks:
     - name: Podman should be present
