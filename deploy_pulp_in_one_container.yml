@@ -59,7 +59,7 @@
     timezone: 'Europe/Amsterdam'
 
     # Version of Pulp, or actually container tag, to install
-    pulp_version_tag: 3.51.0
+    pulp_version_tag: 3.54.0
 
     # Pulp config (settings.py): https://docs.pulpproject.org/pulpcore/configuration/settings.html
     # Contents of variable pulp_settings are processed by Jinja2 and put in the setting.py file
