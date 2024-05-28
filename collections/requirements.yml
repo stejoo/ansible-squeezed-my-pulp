@@ -14,7 +14,7 @@ collections:
   - name: ansible.posix
     version: 1.5.4
   - name: containers.podman
-    version: 1.12.0
+    version: 1.13.0
   # for Pulp repository management
   - name: pulp.squeezer
     version: 0.0.15
