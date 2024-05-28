@@ -1,0 +1,229 @@
+---
+# This playbook attempts to ensure and populate a File repository in Pulp.
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+# This playbook requires a (valid) repository name to be set (as value of file_repository_name).
+# For example by running it as follows:
+#
+# $ ansible-playbook                                    \
+#   --extra-vars 'file_repository_name=my_own_repository'  \
+#   pulp_file_repo_from_fileglob.yml
+#
+# Or by being called from another playbook.
+#
+# Other optional variables are:
+#   file_repository_description: "a description for the repository"
+#   file_local_upload_path: "local path where to look for files"
+#
+
+- name: Upload a local file(s) to a file repository on Pulp
+  hosts: pulp
+  force_handlers: true
+  module_defaults:  # saves specifying these settings at every task using these modules
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; example: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    pulp.squeezer.artifact:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.file_content:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.file_repository:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.file_repository_content:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.file_publication:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.file_distribution:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.task:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    ansible.builtin.uri:
+      body_format: json
+      force_basic_auth: true
+      url_username: "{{ pulp_username }}"  # from group_vars/pulp
+      url_password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+
+  vars:
+    # Pulp where?
+    #pulp_url: "http://{{ inventory_hostname }}:8080"  # specified in from group_vars/pulp already
+
+    # Name and description of repository to put the packages in
+    #file_repository_name: my_very_own_repository  # disabled to prevent this from running as-is.
+    file_repository_description: "My repository for Aiur!"
+    # Local path, on control node, where to look for  files to upload for this repository.
+    file_local_upload_path: "{{ playbook_dir }}/upload/{{ file_repository_name }}"
+
+  tasks:
+    - name: Stop when no file_repository_name given
+      ansible.builtin.fail:
+        msg: "Bailing out. The play requires a repository name set in variable 'file_repository_name'."
+      when: file_repository_name is undefined
+
+    - name: Acquire details of local file(s)
+      ansible.builtin.stat:
+        path: "{{ item }}"  # point me to a real file, not a symlink
+        checksum_algorithm: sha256
+        get_mime: true
+      register: file
+      loop: "{{ query('ansible.builtin.fileglob', file_local_upload_path + '/*') }}"
+      delegate_to: localhost
+
+    - name: Bail out when no matching files are found
+      ansible.builtin.fail:
+        msg: |
+          No matching files have been found in path:
+          {{ file_local_upload_path }}/*.file
+      when: file.results | length < 1
+
+    - name: Verify file(s) to upload are readable files
+      ansible.builtin.assert:
+        that:
+          - item.stat.readable
+          - not item.stat.islnk
+          - item.stat.checksum | length > 0
+        fail_msg: |
+          Something went wrong during verification of file '{{ item.stat.path }}'.
+          Please make sure this path is readable, is not a symlink and is a proper file.
+        quiet: true
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      delegate_to: localhost
+
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    - name: Query Pulp for presence of artifact(s)  # noqa: args[module]
+      pulp.squeezer.artifact:
+        sha256: "{{ item.stat.checksum }}"
+      register: artifact_query
+      # artifact_query.results[i].artifact returns null when artifact is not present
+      # artifact_query.results[i].artifact returns dict when artifact is present
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path | basename }}"
+
+    - name: Copy file(s) to Pulp host
+      ansible.builtin.copy:
+        src: "{{ item.item.stat.path }}"
+        dest: ~/
+        mode: 0644
+      register: copy_status
+      when: item.artifact == None
+      loop: "{{ artifact_query.results }}"
+      loop_control:
+        label: "{{ item.item.stat.path | basename }}"
+      notify:
+        - Clean-up copied files
+
+    - name: Upload artifact(s) to Pulp  # noqa: args[module]
+      pulp.squeezer.artifact:
+        file: "{{ item.dest }}"
+        state: present
+      register: artifact_upload
+      when: item.item.artifact == None
+      loop: "{{ copy_status.results }}"
+      loop_control:
+        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
+
+    - name: Refresh state of artifact(s)  # noqa: args[module]
+      pulp.squeezer.artifact:
+        sha256: "{{ item.stat.checksum }}"
+      register: artifact_state
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path | basename }}"
+
+    - name: Debug - Artifact information
+      ansible.builtin.debug:
+        msg: "{{ artifact_info }}"
+        verbosity: 1
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      vars:
+        artifact_info:
+          - filename: "{{ item.item.stat.path | basename }}"
+            sha256sum: "{{ item.item.stat.checksum }}"
+            artifact: "{{ item.artifact }}"
+
+    - name: Verify artifact integrity by comparing checksum of original file
+      ansible.builtin.assert:
+        that:
+          - checksum.file == checksum.artifact
+        fail_msg: "Checksum of artifact did not match file's. Data corruption occurred?"
+        quiet: true
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ filename }}"
+      vars:
+        filename: "{{ item.item.stat.path | basename }}"
+        checksum:
+          file: "{{ item.item.stat.checksum }}"
+          artifact: "{{ item.artifact.sha256 }}"
+
+    - name: Ensure artifact present as file content  # noqa: args[module]
+      pulp.squeezer.file_content:
+        sha256: "{{ item.artifact.sha256 }}"
+        relative_path: "{{ filename }}"
+        state: present
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      vars:
+        filename: "{{ item.item.stat.path | basename }}"
+      register: file_content
+
+    - name: Ensure file repository  # noqa: args[module]
+      pulp.squeezer.file_repository:
+        name: "{{ file_repository_name }}"
+        description: "{{ file_repository_description }}"
+        state: present
+      register: file_repository_output
+
+    - name: Make list of filenames and checksums to add to file repository
+      set_fact:
+        content_to_add: >
+          {{ content_to_add
+          | default([])
+          + [{ 'sha256': sha256, 'relative_path': filename }] }}
+      loop: "{{ artifact_state.results }}"
+      loop_control:
+        label: "{{ item.artifact.sha256 }}"
+      vars:
+        sha256: "{{ item.artifact.sha256 }}"
+        filename: "{{ item.item.stat.path | basename }}"
+
+    - name: Associate content with file repository  # noqa: args[module]
+      pulp.squeezer.file_repository_content:
+        repository: "{{ file_repository_name }}"
+        present_content: "{{ content_to_add }}"
+      register: file_repository_content
+
+    - name: Create a publication of last repository version  # noqa: args[module]
+      pulp.squeezer.file_publication:
+        repository: "{{ file_repository_name }}"
+        state: present
+      register: file_publication
+
+    - name: Distribute the publication to make repo content available  # noqa: args[module]
+      pulp.squeezer.file_distribution:
+        name: "{{ file_repository_name }}"
+        base_path: "{{ file_repository_name }}"
+        publication: "{{ file_publication.publication.pulp_href }}"
+        state: present
+
+  handlers:
+    - name: Clean-up copied files
+      ansible.builtin.file:
+        path: "{{ item.dest }}"
+        state: absent
+      loop: "{{ copy_status.results }}"
+      loop_control:
+        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
+      when: item.dest is defined  # do not try to remove file the copy task skipped

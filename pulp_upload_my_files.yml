@@ -1,0 +1,18 @@
+---
+# This playbook is used to upload local files to a file repository within the
+# Pulp software repository management.
+#
+# Configured for upload directory 'my_files'.
+# See the 'vars' section for configuration details.
+#
+# Run this and it should run the pulp_file_repo_from_fileglob.yml playbook with
+# the variables set in the vars of the ansible.builtin.import_playbook item.
+
+- name: Run playbook to import files from directory, with vars below
+  ansible.builtin.import_playbook: pulp_file_repo_from_fileglob.yml
+  vars:
+    # Name and description of repository to put the packages in
+    file_repository_name: my_files
+    file_repository_description: "A file repository to hold various important files"
+    # Local path, on control node, where to look for files to upload
+    file_local_upload_path: "{{ playbook_dir }}/upload/{{ file_repository_name }}"
