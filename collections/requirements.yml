@@ -16,5 +16,6 @@ collections:
   - name: containers.podman
     version: 1.13.0
   # for Pulp repository management
-  - name: pulp.squeezer
-    version: 0.0.15
+  - name: https://github.com/stejoo/squeezer.git
+    type: git
+    version: python_distribute_repository

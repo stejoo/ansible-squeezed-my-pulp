@@ -1,0 +1,105 @@
+---
+# Playbook to manage Python package repositories on Pulp
+#
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+- name: Perform management of a Python Package Index on a Pulp repository server
+  hosts: pulp
+  force_handlers: true
+  module_defaults:
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; for example: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    pulp.squeezer.python_distribution:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.python_publication:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.python_repository:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.python_remote:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.python_sync:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+
+  vars:
+    python_repositories:
+      - name: my_custom_python
+        description: A place where I can upload my own Python packages
+        state: present
+      - name: python_pypi_partial
+        description: Partial mirror of Python PyPI repository
+        state: present
+        remote:
+          name: pypi
+          url: https://pypi.org/
+          policy: immediate
+          includes: "{{ lookup('file', 'requirements.txt') | split('\n') }}"
+
+  tasks:
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    - name: Configure Pulp Python repositories  # noqa: args[module]
+      pulp.squeezer.python_repository:
+        name: "{{ repository.name }}"
+        description: "{{ repository.description | default(omit) }}"
+        state: "{{ repository.state | default('present') }}"
+      loop: "{{ python_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+
+# The pulp.squeezer.python_distribution does not support the 'repository' option
+# it release v0.0.15. I did implement it in my own fork. A PR is forthcoming.
+    - name: Manage distribution of the repository  # noqa: args[module]
+      pulp.squeezer.python_distribution:
+        name: "{{ repository.name }}"
+        base_path: "{{ repository.name }}"
+        repository: "{{ repository.name }}"
+        state: "{{ repository.state | default('present') }}"
+      loop: "{{ python_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+
+    - name: Configure remote Python package index(es)  # noqa: args[module]
+      pulp.squeezer.python_remote:
+        name: "{{ repository.remote.name }}"
+        url: "{{ repository.remote.url }}"
+        policy: "{{ repository.remote.policy | default('on_demand') }}"
+        state: "{{ repository.state | default('present') }}"
+        excludes: "{{ repository.remote.excludes | default(omit) }}"
+        includes: "{{ repository.remote.includes | default(omit) }}"
+      loop: "{{ python_repositories }}"
+      loop_control:
+        label: "{{ repository.remote.name | default('No remote defined for ' + repository.name) }}"
+        loop_var: repository
+      when: repository.remote is defined
+
+    - name: Synchronize data from remote repositories
+      pulp.squeezer.python_sync:
+        repository: "{{ repository.name }}"
+        remote: "{{ repository.remote.name }}"
+      register: sync_task
+      loop: "{{ python_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+      when:
+        - repository.remote is defined
+        - repository.state is not defined or repository.state == 'present'
+      ignore_errors: true   # when a sync still fails, keep going for any remaining items.
+
+    - name: Report synchronised repository version
+      ansible.builtin.debug:
+        var: sync.repository_version
+        verbosity: 1
+      loop: "{{ sync_task.results }}"
+      loop_control:
+        label: "{{ sync.repository.name }}"
+        loop_var: sync
+      when: sync.repository_version is defined
