@@ -1,0 +1,60 @@
+---
+# This playbook creates user accounts within Pulp software repository
+# At this time it does not manage account. For example changing a password is
+# not handled by this playbook.
+#
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+
+- name: Create Pulp user accounts
+  hosts: pulp
+  force_handlers: true
+  module_defaults:  # saves specifying these settings at every task using these modules
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; example: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    ansible.builtin.uri:
+      body_format: json
+      force_basic_auth: true
+      url_username: "{{ pulp_username }}"  # from group_vars/pulp
+      url_password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+
+  vars:
+    pulp_users:
+      - username: my_user
+        password: my_password
+
+  tasks:
+    - name: Verify file(s) to upload are readable files
+      ansible.builtin.assert:
+        that:
+          - item.username is defined
+          - item.username | length <= 150
+          - item.password is defined
+        quiet: true
+      loop: "{{ pulp_users }}"
+      loop_control:
+        label: "{{ item.username | default(ansible_loop.index0) }}"
+      delegate_to: localhost
+
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    # Only creation, does not modify or update account
+    - name: Create Pulp user account(s)
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}/pulp/api/v3/users/"
+        method: POST
+        body:
+          username: "{{ item.username }}"
+          password: "{{ item.password }}"
+        status_code: [201]
+      register: user_creation
+      loop: "{{ pulp_users }}"
+      loop_control:
+        label: "{{ item.username }}"
