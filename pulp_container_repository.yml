@@ -1,0 +1,110 @@
+---
+# Playbook to set up custom container repositories on Pulp
+#
+# Author: Stefan Joosten <stefan•ɑƬ•atcomputing•ɖɵʈ•nl>
+# License: GPLv3
+#
+- name: Create container repositories on Pulp
+  hosts: pulp
+  force_handlers: true
+  module_defaults:
+    pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
+      pulp_url: "{{ pulp_url }}"  # from group_vars/pulp; e.g.: http://{{ inventory_hostname }}:8080
+      username: "{{ pulp_username }}"  # from group_vars/pulp
+      password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+    pulp.squeezer.container_distribution:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    pulp.squeezer.container_repository:
+      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+#    pulp.squeezer.container_remote:
+#      <<: *pulp_connection_details  # alias to content of pulp_connection_details
+    ansible.builtin.uri:
+      body_format: json
+      force_basic_auth: true
+      url_username: "{{ pulp_username }}"  # from group_vars/pulp
+      url_password: "{{ pulp_password }}"  # from group_vars/pulp
+      validate_certs: false
+
+  vars:
+    container_repositories:
+      - name: my_containers
+        description: Repository for containers I build
+        state: present
+        access_control:
+          - role: container.containerdistribution_consumer
+            users:
+              - consumer
+#         - role: role1
+#           users:
+#             - bert
+#             - ernie
+#           groups:
+#             - muppets
+#      - name: pulp_docker_hub
+#        description: Caching Docker Hub repository
+#        state: present
+#        remote:
+#          name: docker_hub
+#          description: Docker Hub
+#          state: present
+#          url: https://registry-1.docker.io
+
+  tasks:
+    - name: Refresh and read status from Pulp API  # noqa: args[module]
+      pulp.squeezer.status:
+        refresh_api_cache: true
+
+    - name: Ensure container repository  # noqa: args[module]
+      pulp.squeezer.container_repository:
+        name: "{{ repository.name }}"
+        description: "{{ repository.description }}"
+        state: "{{ repository.state | default('present') }}"
+      loop: "{{ container_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+
+    - name: Create container remote  # noqa: args[module]
+      pulp.squeezer.container_remote:
+        name: "{{ repository.remote.name }}"
+        url: "{{ repository.remote.url }}"
+        proxy_url: "{{ repository.remote.proxy_url | default(omit) }}"
+        state: "{{ repository.remote.state | default('present') }}"
+      loop: "{{ container_repositories }}"
+      loop_control:
+        label: "{{ repository.remote.name | default(repository.name) }}"
+        loop_var: repository
+      when: repository.remote is defined
+
+    - name: Make the container repository available  # noqa: args[module]
+      pulp.squeezer.container_distribution:
+        name: "{{ repository.name }}"
+        base_path: "{{ repository.name }}"
+        repository: "{{ repository.name }}"
+        state: "{{ repository.state | default('present') }}"
+      register: distributions
+      loop: "{{ container_repositories }}"
+      loop_control:
+        label: "{{ repository.name }}"
+        loop_var: repository
+
+    - name: Add role based access to the container distribution(s)  # noqa: args[module]
+      ansible.builtin.uri:
+        url: "{{ pulp_url }}{{ item.0.distribution.pulp_href }}add_role/"
+        method: POST  # can technically only Add Role to a Distribution object
+        body:
+          role: "{{ item.1.role }}"
+          users: "{{ item.1.users | default([]) }}"
+          groups: "{{ item.1.groups | default([]) }}"
+        return_content: true
+        status_code: [201, 400]
+      register: uri
+      loop: "{{ distributions.results | subelements('repository.access_control', 'skip_missing=True') }}"
+      loop_control:
+        label: "Apply {{ item.1.role|default('no') }} role to distribution {{ item.0.distribution.name }}"
+      when: item.0.repository.access_control is defined
+      changed_when: uri.status == 201  # role is added to the distribution
+      failed_when:
+        - uri.status == 400  # an error, one exception: the role is already assigned, which is OK
+        - uri.json.non_field_errors.0|default() is not search ("role is already assigned to")
