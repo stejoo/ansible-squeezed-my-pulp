@@ -1,0 +1,153 @@
+---
+# Playbook to run a Pulp software repository on the local machine in a Pod.
+#
+# Uses Podman to pull and run the "Pulp in One Container" container image.
+# The container will run rootless as a current local user and be run inside a
+# pod. This allows spinning up another container with tooling to be run in the
+# same pod to allow for development, testing and whatever purpose fits you.
+#
+# This playbook is written and tested on Red Hat family systems (Fedora). I do
+# expect it to operate just fine on other Linux distros that have systemd and
+# podman available in the software repositories as well.
+#
+# Host dependencies:
+#   - Ansible, of course
+#   - podman 5.0 or later
+#   - systemd
+#
+# Ansible dependencies:
+#   collections:
+#     - ansible.posix
+#     - containers.podman
+#
+
+- name: Ensure Pulp in One Container container as local user on local system
+  hosts: localhost
+  connection: local
+  vars:
+    # Generic configuration for the containers
+    podman_log_driver: 'journald'
+    timezone: 'Europe/Amsterdam'
+    ## To retain state: use this to specify a path where the container may write data to.
+    ## Below this path the playbook will create various directories for settings and content.
+    storage_directory: "{{ ansible_user_dir }}/Projects/pulp"
+
+    # Version of Pulp, or actually container tag, to install
+    pulp_version_tag: 3.69.0
+
+    # Pulp config (settings.py): https://docs.pulpproject.org/pulpcore/configuration/settings.html
+    # Contents of variable pulp_settings are processed by Jinja2 and put in the setting.py file
+    # after without checking syntax. Ensure you use correct syntax otherwise Pulp will be unhappy!
+    pulp_settings: |
+      CONTENT_ORIGIN = 'http://{{ inventory_hostname }}:8080'
+      ALLOWED_CONTENT_CHECKSUMS = ["md5", "sha1", "sha256"]
+      ANSIBLE_API_HOSTNAME = 'http://{{ inventory_hostname }}:8080'
+      ANSIBLE_CONTENT_HOSTNAME = 'http://{{ inventory_hostname }}:8080/pulp/content'
+      CACHE_ENABLED = True
+      TOKEN_AUTH_DISABLED = True
+
+    # Configuration for pulp administrative user account
+    pulp_admin_password: 'secret'
+
+  tasks:
+    - name: Ensure directories to preserve Pulp state are present
+      ansible.builtin.file:
+        path: "{{ item.dir }}"
+        state: directory
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        - dir: "{{ storage_directory }}"
+        - dir: "{{ storage_directory }}/containers"
+        - dir: "{{ storage_directory }}/pgsql"
+          mode: '0750'
+        - dir: "{{ storage_directory }}/pulp_storage/tmp"
+        - dir: "{{ storage_directory }}/settings/certs"
+
+    - name: Write settings file
+      ansible.builtin.copy:
+        content: "{{ pulp_settings }}"
+        dest: "{{ storage_directory }}/settings/settings.py"
+        mode: '0644'
+
+    - name: Acquire Pulp multi-process container image
+      containers.podman.podman_image:
+        name: "docker.io/pulp/pulp:{{ pulp_version_tag | default('stable') }}"
+        username: "{{ item.user | default(omit) }}"
+        password: "{{ item.password | default(omit) }}"
+        state: present
+#      environment:
+#        http_proxy:
+#        https_proxy:
+#        no_proxy:
+
+    - name: Ensure Pulp pod
+      containers.podman.podman_pod:
+        name: pulppod
+        state: quadlet
+        ports: 
+          - "8080:80"
+
+    - name: Ensure Pulp container
+      containers.podman.podman_container:
+        name: pulp
+        image: "docker.io/pulp/pulp:{{ pulp_version_tag | default('stable') }}"
+        state: quadlet
+        pod: pulppod.pod
+        log_driver: "{{ podman_log_driver | default(omit) }}"
+        timezone: "{{ timezone | default(ansible_facts.date_time.tz) }}"
+        env:
+          TZ: "{{ timezone | default(ansible_facts.date_time.tz) }}"
+#          http_proxy:
+#          https_proxy:
+#          no_proxy:
+        device:
+          - /dev/fuse
+        volume:
+          - "{{ storage_directory }}/containers:/var/lib/containers:Z"
+          - "{{ storage_directory }}/pgsql:/var/lib/pgsql:Z"
+          - "{{ storage_directory }}/pulp_storage:/var/lib/pulp:Z"
+          - "{{ storage_directory }}/settings:/etc/pulp:Z"
+      register: podman_result
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        scope: user
+
+    - name: Start the Pod
+      ansible.builtin.systemd_service:
+        name: pulppod-pod
+        state: started
+        scope: user
+
+    - name: Pause until Pulp API is reachable
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/pulp/api/v3/status/"
+        follow_redirects: none
+        method: GET
+      register: uri_result
+      until: uri_result.status == 200
+      retries: 18  # 180 seconds == 3 minutes of retry time.
+      delay: 10
+      check_mode: false  # always run, this is just a query.
+
+    - name: Check password of Pulp admin user
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/pulp/api/v3/groups/"
+        force_basic_auth: true
+        url_username: "admin"
+        url_password: "{{ pulp_admin_password }}"
+        follow_redirects: none
+        method: GET
+        status_code: [200, 401]
+      register: pulp_admin_login
+      check_mode: false  # always run, this is just a query.
+
+    - name: Set password for Pulp admin user
+      ansible.builtin.command:
+        cmd: |
+          podman exec -it {{ podman_result.container.Name }}
+          bash -c 'pulpcore-manager reset-admin-password --password {{ pulp_admin_password }}'
+      changed_when: true
+      no_log: true
+      when: pulp_admin_login.status == 401  # run when we fail to login as admin
