@@ -30,7 +30,7 @@
     timezone: 'Europe/Amsterdam'
     ## To retain state: use this to specify a path where the container may write data to.
     ## Below this path the playbook will create various directories for settings and content.
-    storage_directory: "{{ ansible_user_dir }}/Projects/pulp"
+    #pulp_storage_directory: "{{ ansible_user_dir }}/Projects/pulp"  # specified in group_vars/pulp/pulp.yml
 
     # Version of Pulp, or actually container tag, to install
     pulp_version_tag: 3.69.0
@@ -56,17 +56,17 @@
         state: directory
         mode: "{{ item.mode | default('0755') }}"
       loop:
-        - dir: "{{ storage_directory }}"
-        - dir: "{{ storage_directory }}/containers"
-        - dir: "{{ storage_directory }}/pgsql"
+        - dir: "{{ pulp_storage_directory }}"
+        - dir: "{{ pulp_storage_directory }}/containers"
+        - dir: "{{ pulp_storage_directory }}/pgsql"
           mode: '0750'
-        - dir: "{{ storage_directory }}/pulp_storage/tmp"
-        - dir: "{{ storage_directory }}/settings/certs"
+        - dir: "{{ pulp_storage_directory }}/pulp_storage/tmp"
+        - dir: "{{ pulp_storage_directory }}/settings/certs"
 
     - name: Write settings file
       ansible.builtin.copy:
         content: "{{ pulp_settings }}"
-        dest: "{{ storage_directory }}/settings/settings.py"
+        dest: "{{ pulp_storage_directory }}/settings/settings.py"
         mode: '0644'
 
     - name: Acquire Pulp multi-process container image
@@ -82,17 +82,17 @@
 
     - name: Ensure Pulp pod
       containers.podman.podman_pod:
-        name: pulppod
+        name: "{{ pulp_pod_name }}"  # from group_vars/pulp/pulp.yml
         state: quadlet
-        ports: 
+        ports:
           - "8080:80"
 
     - name: Ensure Pulp container
       containers.podman.podman_container:
-        name: pulp
+        name: "{{ pulp_container_name }}"  # from group_vars/pulp/pulp.yml
         image: "docker.io/pulp/pulp:{{ pulp_version_tag | default('stable') }}"
         state: quadlet
-        pod: pulppod.pod
+        pod: "{{ pulp_pod_name }}.pod"
         log_driver: "{{ podman_log_driver | default(omit) }}"
         timezone: "{{ timezone | default(ansible_facts.date_time.tz) }}"
         env:
@@ -103,10 +103,10 @@
         device:
           - /dev/fuse
         volume:
-          - "{{ storage_directory }}/containers:/var/lib/containers:Z"
-          - "{{ storage_directory }}/pgsql:/var/lib/pgsql:Z"
-          - "{{ storage_directory }}/pulp_storage:/var/lib/pulp:Z"
-          - "{{ storage_directory }}/settings:/etc/pulp:Z"
+          - "{{ pulp_storage_directory }}/containers:/var/lib/containers:Z"
+          - "{{ pulp_storage_directory }}/pgsql:/var/lib/pgsql:Z"
+          - "{{ pulp_storage_directory }}/pulp_storage:/var/lib/pulp:Z"
+          - "{{ pulp_storage_directory }}/settings:/etc/pulp:Z"
       register: podman_result
 
     - name: Reload systemd
@@ -116,7 +116,7 @@
 
     - name: Start the Pod
       ansible.builtin.systemd_service:
-        name: pulppod-pod
+        name: "{{ pulp_pod_name }}-pod"
         state: started
         scope: user
 

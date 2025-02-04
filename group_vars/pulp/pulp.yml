@@ -1,4 +1,12 @@
-# Vars for group pulp (ya rly)
+# Vars for group pulp
+
+# Name of container and pod
+pulp_container_name: pulp
+pulp_pod_name: pulppod
+# Path where to put the container volume mounts for persistence
+pulp_storage_directory: "{{ ansible_user_dir }}/Projects/pulp"
+
+# Pulp configuration bits
 pulp_url: "http://{{ inventory_hostname }}:8080"
 pulp_username: "admin"
 pulp_password: "secret"
