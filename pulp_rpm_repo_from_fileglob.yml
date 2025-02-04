@@ -18,7 +18,8 @@
 #
 
 - name: Upload a local RPM package(s) to a RPM repository on Pulp
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:  # saves specifying these settings at every task using these modules
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
@@ -103,6 +104,7 @@
     - name: Query Pulp for presence of artifact(s)  # noqa: args[module]
       pulp.squeezer.artifact:
         sha256: "{{ item.stat.checksum }}"
+      ignore_errors: true
       register: artifact_query
       # artifact_query.results[i].artifact returns null when artifact is not present
       # artifact_query.results[i].artifact returns dict when artifact is present
@@ -116,7 +118,7 @@
         dest: ~/
         mode: 0644
       register: copy_status
-      when: item.artifact == None
+      when: item.failed
       loop: "{{ artifact_query.results }}"
       loop_control:
         label: "{{ item.item.stat.path | basename }}"
@@ -128,7 +130,7 @@
         file: "{{ item.dest }}"
         state: present
       register: artifact_upload
-      when: item.item.artifact == None
+      when: item.item.failed
       loop: "{{ copy_status.results }}"
       loop_control:
         label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
