@@ -10,12 +10,6 @@
 
 collections:
   - name: community.general
-    version: 8.5.0
   - name: ansible.posix
-    version: 1.5.4
   - name: containers.podman
-    version: 1.13.0
-  # for Pulp repository management
-  - name: https://github.com/stejoo/squeezer.git
-    type: git
-    version: python_distribute_repository
+  - name: pulp.squeezer
