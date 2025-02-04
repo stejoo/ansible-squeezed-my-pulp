@@ -5,7 +5,8 @@
 # License: GPLv3
 #
 - name: Perform management of a Python Package Index on a Pulp repository server
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
@@ -53,8 +54,6 @@
         label: "{{ repository.name }}"
         loop_var: repository
 
-# The pulp.squeezer.python_distribution does not support the 'repository' option
-# it release v0.0.15. I did implement it in my own fork. A PR is forthcoming.
     - name: Manage distribution of the repository  # noqa: args[module]
       pulp.squeezer.python_distribution:
         name: "{{ repository.name }}"

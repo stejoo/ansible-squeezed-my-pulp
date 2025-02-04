@@ -8,7 +8,8 @@
 #
 
 - name: Create Pulp user accounts
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:  # saves specifying these settings at every task using these modules
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor

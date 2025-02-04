@@ -5,7 +5,8 @@
 # License: GPLv3
 #
 - name: Create container repositories on Pulp
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor

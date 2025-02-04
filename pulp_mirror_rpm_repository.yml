@@ -5,7 +5,8 @@
 # License: GPLv3
 #
 - name: Perform management of Red Hat repositories on a Pulp repository server
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
