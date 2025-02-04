@@ -1,43 +1,46 @@
 ---
-# Playbook to destroy Pulp software repository on target host/group.
+# Playbook to destroy the demo Pulp software repository
 #
-# Use Podman to destroy and cleanup the "Pulp in One Container" container image
+# Use destroy and cleanup the "Pulp in One Container" container and Pulp pod.
 #
 # Dependencies:
 #   collections:
 #     - container.podman
 #
 
-- name: Nuke the Pulp in One Container container
-  hosts: pulp
-  remote_user: "{{ pulp_system_user | default('pulp') }}"
+- name: Nuke the Pulp in One Container pod and data
+  hosts: localhost
+  connection: local
   vars:
     # Name of container to destroy
     pulp_container_name: pulp
+    pulp_pod_name: pulppod
+    # Path where the container volume mounts have been made
+    pulp_storage_directory: "{{ ansible_user_dir }}/Projects/pulp"
 
   tasks:
-    - name: Tell Podman to ask Pulp to stop
-      containers.podman.podman_container:
-        name: pulp
-        state: stopped
-
-    - name: Ensure the Pulp service is stopped and disabled
-      ansible.builtin.systemd:
-        name: "container-{{ pulp_container_name }}.service"
+    - name: Stop the Pulp pod
+      ansible.builtin.systemd_service:
+        name: "{{ pulp_pod_name }}-pod.service"
         state: stopped
         enabled: false
         scope: user
 
-    - name: Remove the systemd unit file of the Pulp container
+    - name: Remove the Podman Quadlet files
       ansible.builtin.file:
-        path: "{{ ansible_facts.user_dir }}/.config/systemd/user/container-{{ pulp_container_name }}.service"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "{{ ansible_facts.user_dir }}/.config/containers/systemd/{{ pulp_container_name }}.container"
+        - "{{ ansible_facts.user_dir }}/.config/containers/systemd/{{ pulp_pod_name }}.pod"
       notify:
         - Perform systemd daemon-reload
 
-    - name: Remove pulp_glue python dependency of pulp.squeezer collection
-      ansible.builtin.pip:
-        name: pulp-glue
+    - name: Wipe directories that preserve Pulp state
+      become: true
+      become_method: containers.podman.podman_unshare
+      ansible.builtin.file:
+        path: "{{ pulp_storage_directory }}"
         state: absent
 
   handlers:
@@ -45,13 +48,3 @@
       ansible.builtin.systemd:
         daemon_reload: true
         scope: user
-
-
-- name: Remove leftover data files
-  hosts: pulp
-  become: true
-  tasks:
-    - name: Wipe directories that preserve Pulp state
-      ansible.builtin.file:
-        path: "/home/{{ pulp_system_user | default('pulp') }}/pulp"
-        state: absent
