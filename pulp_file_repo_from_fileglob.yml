@@ -18,7 +18,8 @@
 #
 
 - name: Upload a local file(s) to a file repository on Pulp
-  hosts: pulp
+  hosts: localhost
+  connection: local
   force_handlers: true
   module_defaults:  # saves specifying these settings at every task using these modules
     pulp.squeezer.status: &pulp_connection_details  # & creates YAML anchor
@@ -31,8 +32,6 @@
     pulp.squeezer.file_content:
       <<: *pulp_connection_details  # alias to content of pulp_connection_details
     pulp.squeezer.file_repository:
-      <<: *pulp_connection_details  # alias to content of pulp_connection_details
-    pulp.squeezer.file_repository_content:
       <<: *pulp_connection_details  # alias to content of pulp_connection_details
     pulp.squeezer.file_publication:
       <<: *pulp_connection_details  # alias to content of pulp_connection_details
@@ -98,112 +97,21 @@
       pulp.squeezer.status:
         refresh_api_cache: true
 
-    - name: Query Pulp for presence of artifact(s)  # noqa: args[module]
-      pulp.squeezer.artifact:
-        sha256: "{{ item.stat.checksum }}"
-      register: artifact_query
-      # artifact_query.results[i].artifact returns null when artifact is not present
-      # artifact_query.results[i].artifact returns dict when artifact is present
-      loop: "{{ file.results }}"
-      loop_control:
-        label: "{{ item.stat.path | basename }}"
-
-    - name: Copy file(s) to Pulp host
-      ansible.builtin.copy:
-        src: "{{ item.item.stat.path }}"
-        dest: ~/
-        mode: 0644
-      register: copy_status
-      when: item.artifact == None
-      loop: "{{ artifact_query.results }}"
-      loop_control:
-        label: "{{ item.item.stat.path | basename }}"
-      notify:
-        - Clean-up copied files
-
-    - name: Upload artifact(s) to Pulp  # noqa: args[module]
-      pulp.squeezer.artifact:
-        file: "{{ item.dest }}"
-        state: present
-      register: artifact_upload
-      when: item.item.artifact == None
-      loop: "{{ copy_status.results }}"
-      loop_control:
-        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
-
-    - name: Refresh state of artifact(s)  # noqa: args[module]
-      pulp.squeezer.artifact:
-        sha256: "{{ item.stat.checksum }}"
-      register: artifact_state
-      loop: "{{ file.results }}"
-      loop_control:
-        label: "{{ item.stat.path | basename }}"
-
-    - name: Debug - Artifact information
-      ansible.builtin.debug:
-        msg: "{{ artifact_info }}"
-        verbosity: 1
-      loop: "{{ artifact_state.results }}"
-      loop_control:
-        label: "{{ item.artifact.sha256 }}"
-      vars:
-        artifact_info:
-          - filename: "{{ item.item.stat.path | basename }}"
-            sha256sum: "{{ item.item.stat.checksum }}"
-            artifact: "{{ item.artifact }}"
-
-    - name: Verify artifact integrity by comparing checksum of original file
-      ansible.builtin.assert:
-        that:
-          - checksum.file == checksum.artifact
-        fail_msg: "Checksum of artifact did not match file's. Data corruption occurred?"
-        quiet: true
-      loop: "{{ artifact_state.results }}"
-      loop_control:
-        label: "{{ filename }}"
-      vars:
-        filename: "{{ item.item.stat.path | basename }}"
-        checksum:
-          file: "{{ item.item.stat.checksum }}"
-          artifact: "{{ item.artifact.sha256 }}"
-
-    - name: Ensure artifact present as file content  # noqa: args[module]
-      pulp.squeezer.file_content:
-        sha256: "{{ item.artifact.sha256 }}"
-        relative_path: "{{ filename }}"
-        state: present
-      loop: "{{ artifact_state.results }}"
-      loop_control:
-        label: "{{ item.artifact.sha256 }}"
-      vars:
-        filename: "{{ item.item.stat.path | basename }}"
-      register: file_content
-
     - name: Ensure file repository  # noqa: args[module]
       pulp.squeezer.file_repository:
         name: "{{ file_repository_name }}"
         description: "{{ file_repository_description }}"
         state: present
-      register: file_repository_output
 
-    - name: Make list of filenames and checksums to add to file repository
-      set_fact:
-        content_to_add: >
-          {{ content_to_add
-          | default([])
-          + [{ 'sha256': sha256, 'relative_path': filename }] }}
-      loop: "{{ artifact_state.results }}"
-      loop_control:
-        label: "{{ item.artifact.sha256 }}"
-      vars:
-        sha256: "{{ item.artifact.sha256 }}"
-        filename: "{{ item.item.stat.path | basename }}"
-
-    - name: Associate content with file repository  # noqa: args[module]
-      pulp.squeezer.file_repository_content:
+    - name: Ensure artifact present as file content  # noqa: args[module]
+      pulp.squeezer.file_content:
+        file: "{{ item.stat.path }}"
         repository: "{{ file_repository_name }}"
-        present_content: "{{ content_to_add }}"
-      register: file_repository_content
+        relative_path: "{{ item.stat.path | basename }}"
+        state: present
+      loop: "{{ file.results }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
 
     - name: Create a publication of last repository version  # noqa: args[module]
       pulp.squeezer.file_publication:
@@ -217,13 +125,3 @@
         base_path: "{{ file_repository_name }}"
         publication: "{{ file_publication.publication.pulp_href }}"
         state: present
-
-  handlers:
-    - name: Clean-up copied files
-      ansible.builtin.file:
-        path: "{{ item.dest }}"
-        state: absent
-      loop: "{{ copy_status.results }}"
-      loop_control:
-        label: "{{ item.item.item.stat.path | basename }}"  # on skip of the copy task item.dest is undefined.
-      when: item.dest is defined  # do not try to remove file the copy task skipped
