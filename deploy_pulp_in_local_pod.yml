@@ -146,7 +146,7 @@
     - name: Set password for Pulp admin user
       ansible.builtin.command:
         cmd: |
-          podman exec -it {{ podman_result.container.Name }}
+          podman exec -it {{ pulp_container_name }}
           bash -c 'pulpcore-manager reset-admin-password --password {{ pulp_admin_password }}'
       changed_when: true
       no_log: true
